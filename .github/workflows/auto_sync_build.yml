@@ -1,0 +1,79 @@
+name: Auto-Sync Upstream & Build Modified Aurora
+
+on:
+  schedule:
+    # Cek update upstream setiap 6 jam
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Memungkinkan jalankan manual kapan saja dari tombol GitHub Actions
+
+permissions:
+  contents: write
+
+jobs:
+  check-and-build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync with Upstream
+        id: sync
+        shell: bash
+        run: |
+          git remote add upstream https://github.com/Daturaxoxo/Aurora.git || true
+          git fetch upstream main
+          
+          # Coba merge perubahan upstream tanpa menimpa modifikasi custom
+          if git merge upstream/main -m "chore(auto-sync): merge upstream changes"; then
+            echo "merged=true" >> $GITHUB_OUTPUT
+            git push origin HEAD || true
+          else
+            echo "Conflict detected! Attempting resolution favoring custom modifications..."
+            git checkout --ours crates/ipc/src/lib.rs Modify/ || true
+            git add -A
+            git commit -m "chore(auto-sync): resolve merge conflict preserving custom modifications" || true
+            echo "merged=true" >> $GITHUB_OUTPUT
+            git push origin HEAD || true
+          fi
+
+      - name: Install Rust Toolchain (Nightly)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build Modified Executables
+        shell: pwsh
+        run: |
+          cargo build --release -p Aurora -p updater -p oneclick -p AuroraInstaller
+
+      - name: Generate Hybrid Manifest
+        shell: pwsh
+        run: |
+          python Modify/scripts/generate_hybrid_manifest.py
+
+      - name: Create Release & Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "Aurora Modified Release"
+          draft: false
+          prerelease: false
+          files: |
+            target/release/Aurora.exe
+            target/release/updater.exe
+            target/release/oneclick.exe
+            target/release/AuroraUninstaller.exe
+            windows/manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
